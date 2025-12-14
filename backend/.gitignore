@@ -1,3 +1,5 @@
+__pycache__/
+*.pyc
 .env
 venv/
 backend/venv/Lib/site-packages/OCP/OCP.cp311-win_amd64.pyd
