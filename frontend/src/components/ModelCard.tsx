@@ -1,5 +1,5 @@
 import { Canvas, useLoader } from "@react-three/fiber";
-import { OrbitControls, PerspectiveCamera, Center } from "@react-three/drei";
+import { Center,Resize } from "@react-three/drei"; // Removed OrbitControls and PerspectiveCamera
 import { STLLoader } from "three/examples/jsm/Addons.js";
 import { deleteModel, updateModel } from "../lib/api";
 import toast from "react-hot-toast";
@@ -10,11 +10,13 @@ import { Link } from "react-router-dom";
 function STLViewer({ url }: { url: string }) {
   const geometry = useLoader(STLLoader, url);
   return (
+    <Resize scale={2}>
     <Center>
-      <mesh geometry={geometry} scale={1}>
+      <mesh geometry={geometry} scale={1} rotation={[-Math.PI / 2, 0, 0]}>
         <meshStandardMaterial color="orange" />
       </mesh>
     </Center>
+    </Resize>
   );
 }
 
@@ -25,7 +27,7 @@ export default function ModelCard({
   model: any;
   onUpdate: () => void;
 }) {
-  const stlUrl = import.meta.env.VITE_BACKEND_URL + model.stl_url;
+  const stlUrl = `${import.meta.env.VITE_BACKEND_URL}/cad/${model.id}/download_stl`;
   const [isEditing, setIsEditing] = useState(false);
   const [editedPrompt, setEditedPrompt] = useState(model.prompt);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -64,15 +66,15 @@ export default function ModelCard({
       <div className="h-64 bg-gray-100 relative group">
         <ErrorBoundary fallback={<div className="flex items-center justify-center h-full text-red-500">Failed to load model</div>}>
           <React.Suspense fallback={<div className="flex items-center justify-center h-full">Loading 3D model...</div>}>
-            <Canvas>
+            {/* Added camera prop to Canvas for static positioning without OrbitControls */}
+            <Canvas camera={{ position: [4, 4, 4], fov: 45 }}>
               <ambientLight intensity={0.8} />
               <directionalLight position={[10, 10, 5]} intensity={1} />
               <STLViewer url={stlUrl} />
-              <PerspectiveCamera makeDefault position={[50, 50, 50]} fov={30} />
-              <OrbitControls makeDefault />
             </Canvas>
           </React.Suspense>
         </ErrorBoundary>
+        
         <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={() => setIsEditing(true)}

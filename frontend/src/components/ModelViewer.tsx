@@ -42,11 +42,11 @@ export default function ModelViewer() {
   if (loading) return <div className="text-center py-20 text-xl">Loading...</div>;
   if (!model) return <div className="text-center py-20 text-xl">Model not found</div>;
 
-  const stlUrl = import.meta.env.VITE_BACKEND_URL + model.stl_url;
+  // Fetch STL from API endpoint
+  const stlUrl = `${import.meta.env.VITE_BACKEND_URL}/cad/${model.id}/download_stl?t=${new Date(model.timestamp).getTime()}`;
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col">
-      {/* --- FIXED HEADER SECTION --- */}
       <header className="p-4 flex items-center gap-4 bg-white border-b border-gray-200 shadow-sm z-10 shrink-0">
         <Link
           to="/"
@@ -64,7 +64,6 @@ export default function ModelViewer() {
           </h1>
         </div>
       </header>
-      {/* --------------------------- */}
 
       <main className="flex-1 relative overflow-hidden bg-gray-100">
         <ErrorBoundary fallback={<div className="text-center py-20 text-xl">Failed to load model</div>}>

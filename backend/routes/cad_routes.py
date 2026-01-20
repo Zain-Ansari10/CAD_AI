@@ -1,30 +1,18 @@
 # routes/cad_routes.py
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Response
 from models.request import PromptRequest
 from services.llm_service import generate_code
 from services.cad_service import run_code_and_export
 from database.db import get_prompts_collection
-
 from datetime import datetime
-from bson import ObjectId
+from bson import ObjectId, Binary
 from typing import List, Optional
 import os
 import uuid
 
 router = APIRouter(prefix="/cad", tags=["CAD Models"])
 
-# convert MongoDB document to dict with string ID
-def model_to_dict(doc) -> dict:
-    stl_filename = doc.get("stl_filename")
-    return {
-        "id": str(doc["_id"]),
-        "prompt": doc["prompt"],
-        "generated_code": doc.get("generated_code", ""),
-        "stl_filename": stl_filename,
-        "stl_url": f"/stls/{stl_filename}" if stl_filename else None,
-        "timestamp": doc["timestamp"].isoformat() + "Z",
-    }
-
+# --- Store STL as binary in MongoDB and expose via streaming endpoint --- #
 
 @router.post("/generate", status_code=status.HTTP_201_CREATED)
 async def generate_model(request: PromptRequest):
@@ -32,22 +20,24 @@ async def generate_model(request: PromptRequest):
     filename = f"{uuid.uuid4()}.stl"
     filepath = run_code_and_export(code, filename)
 
+    # Read STL file as binary
+    with open(filepath, "rb") as f:
+        stl_bytes = f.read()
+
+    # Insert prompt, code, STL binary to MongoDB
     insert_result = get_prompts_collection().insert_one({
         "prompt": request.prompt,
         "generated_code": code,
-        "stl_filename": filename,
+        "stl_data": Binary(stl_bytes),
         "timestamp": datetime.utcnow()
     })
+    # Optionally remove file from disk here if you want ONLY DB storage
+    # os.remove(filepath)
 
     return {
         "id": str(insert_result.inserted_id),
-        "prompt": request.prompt,
-        "generated_code": code,
-        "stl_url": f"/stls/{filename}",
-        "download": f"/stls/{filename}?download=1",
-        "message": "Model generated and saved!"
+        "message": "Model generated and saved to MongoDB!"
     }
-
 
 @router.get("/", response_model=List[dict])
 async def list_models(
@@ -59,110 +49,108 @@ async def list_models(
         query = {}
         if prompt:
             query["prompt"] = {"$regex": prompt, "$options": "i"}
-
         cursor = get_prompts_collection() \
             .find(query) \
             .sort("timestamp", -1) \
             .skip(skip) \
             .limit(limit)
-
-        models = [model_to_dict(doc) for doc in cursor]
+        models = [{
+            "id": str(doc["_id"]),
+            "prompt": doc["prompt"],
+            "timestamp": doc["timestamp"].isoformat() + "Z",
+        } for doc in cursor]
         return models
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
+@router.get("/{model_id}/download_stl", response_class=Response)
+async def download_stl_from_db(model_id: str):
+    doc = get_prompts_collection().find_one({"_id": ObjectId(model_id)})
+    if not doc or "stl_data" not in doc:
+        raise HTTPException(status_code=404, detail="STL not found in DB.")
+    stl_bytes = doc["stl_data"]
+    filename = f"model_{model_id[:8]}.stl"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"'
+    }
+    return Response(content=stl_bytes, media_type="application/sla", headers=headers)
 
 @router.get("/{model_id}", response_model=dict)
 async def get_model(model_id: str):
     if not ObjectId.is_valid(model_id):
         raise HTTPException(status_code=400, detail="Invalid model ID")
-
     doc = get_prompts_collection().find_one({"_id": ObjectId(model_id)})
     if not doc:
         raise HTTPException(status_code=404, detail="Model not found")
-
-    return model_to_dict(doc)
-
+    return {
+        "id": str(doc["_id"]),
+        "prompt": doc["prompt"],
+        "timestamp": doc["timestamp"].isoformat() + "Z",
+        # Add additional fields you want to send
+    }
 
 @router.put("/{model_id}", status_code=status.HTTP_200_OK)
 async def update_model(model_id: str, request: PromptRequest):
     if not ObjectId.is_valid(model_id):
         raise HTTPException(status_code=400, detail="Invalid model ID")
 
-    old_doc = get_prompts_collection().find_one({"_id": ObjectId(model_id)})
-    if not old_doc:
+    collection = get_prompts_collection()
+    
+    # 1. Check if the model exists before doing expensive generation work
+    if not collection.find_one({"_id": ObjectId(model_id)}):
         raise HTTPException(status_code=404, detail="Model not found")
 
-    # Optional: delete old STL file
-    old_filename = old_doc["stl_filename"]
-    old_path = os.path.join("stls", old_filename)
-    if os.path.exists(old_path):
-        try:
-            os.remove(old_path)
-        except:
-            pass  
+    try:
+        # 2. Regenerate Code and STL based on the new prompt
+        new_code = generate_code(request.prompt)
+        filename = f"{uuid.uuid4()}.stl"
+        filepath = run_code_and_export(new_code, filename)
 
-    # Generate new code & STL
-    new_code = generate_code(request.prompt)
-    new_filename = f"{uuid.uuid4()}.stl"
-    run_code_and_export(new_code, new_filename)
+        # 3. Read the new STL binary
+        with open(filepath, "rb") as f:
+            stl_bytes = f.read()
 
-    # Update in DB
-    updated = get_prompts_collection().update_one(
-        {"_id": ObjectId(model_id)},
-        {"$set": {
-            "prompt": request.prompt,
-            "generated_code": new_code,
-            "stl_filename": new_filename,
-            "timestamp": datetime.utcnow()
-        }}
-    )
+        # 4. Update the MongoDB document
+        collection.update_one(
+            {"_id": ObjectId(model_id)},
+            {"$set": {
+                "prompt": request.prompt,
+                "generated_code": new_code,
+                "stl_data": Binary(stl_bytes),
+                "last_updated": datetime.utcnow()
+            }}
+        )
 
-    if updated.modified_count == 0:
-        raise HTTPException(status_code=500, detail="Failed to update model")
+        # 5. Cleanup temp file
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
-    return {
-        "id": model_id,
-        "prompt": request.prompt,
-        "generated_code": new_code,
-        "stl_url": f"/stls/{new_filename}",
-        "message": "Model updated successfully!"
-    }
+        return {
+            "id": model_id,
+            "message": "Model updated and regenerated successfully"
+        }
 
-
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update model: {str(e)}")
 @router.delete("/{model_id}", status_code=status.HTTP_200_OK)
 async def delete_model(model_id: str):
     if not ObjectId.is_valid(model_id):
         raise HTTPException(status_code=400, detail="Invalid model ID")
-
     doc = get_prompts_collection().find_one({"_id": ObjectId(model_id)})
     if not doc:
         raise HTTPException(status_code=404, detail="Model not found")
-
-    # Delete STL file
-    filename = doc["stl_filename"]
-    filepath = os.path.join("stls", filename)
-    if os.path.exists(filepath):
-        try:
-            os.remove(filepath)
-        except Exception as e:
-            print(f"Warning: Could not delete STL file {filename}: {e}")
-
-    # Delete from DB
-    result = get_prompts_collection().delete_one({"_id": ObjectId(model_id)})
-    
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=500, detail="Failed to delete from database")
-
+    get_prompts_collection().delete_one({"_id": ObjectId(model_id)})
     return {"message": "Model and file deleted successfully", "id": model_id}
-
 
 @router.get("/health")
 def health():
-    return {"status": "Text-to-CAD API running!", "endpoints": [
-        "POST   /cad/generate",
-        "GET    /cad/",
-        "GET    /cad/{id}",
-        "PUT    /cad/{id}",
-        "DELETE /cad/{id}"
-    ]}
+    return {
+        "status": "Text-to-CAD API running!",
+        "endpoints": [
+            "POST   /cad/generate",
+            "GET    /cad/",
+            "GET    /cad/{id}",
+            "GET    /cad/{id}/download_stl",
+            "DELETE /cad/{id}"
+        ]
+    }

@@ -21,6 +21,8 @@ export const getModels=()=>api.get<Model[]>("/cad/");
 
 export const getModelById=(id:string)=>api.get<Model>(`/cad/${id}`);
 
-export const updateModel = (id:string,prompt:string)=> api.put(`/cad/${id}`,{prompt});
+//PUT to /cad/{id}
+export const updateModel = (id: string, prompt: string) => 
+    api.put(`/cad/${id}`, { prompt });
 
 export const deleteModel = (id:string) =>api.delete(`/cad/${id}`);
