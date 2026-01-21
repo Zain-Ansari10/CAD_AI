@@ -32,7 +32,7 @@ async def generate_model(request: PromptRequest):
         "timestamp": datetime.utcnow()
     })
     # Optionally remove file from disk here if you want ONLY DB storage
-    # os.remove(filepath)
+    os.remove(filepath)
 
     return {
         "id": str(insert_result.inserted_id),
