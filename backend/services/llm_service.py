@@ -186,25 +186,32 @@ result = outer.cut(inner)
 
 # ============ MAIN CODE GENERATOR ============
 
-def generate_code(prompt: str) -> str:
+def generate_code(prompt: str, history: list = None) -> str:
     """
     Generates CadQuery code for ANY object by understanding what it is
     """
     
     print(f"\n[DEBUG] Generating code for prompt: {prompt}")
     
+    messages = [
+        {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT}
+    ]
+    if history:
+        for item in history:
+            messages.append({"role": "user", "content": item["prompt"]})
+            messages.append({"role": "assistant", "content": item["generated_code"]})
+
+    messages.append({
+        "role": "user", 
+        "content": f"{prompt}\n\nBefore writing code:\n1. Describe what this object looks like from one end to the other\n2. Identify which end is thick vs thin\n3. Then write code building it section by section"
+    })
+
     try:
         response = client.chat.completions.create(
             model="gpt-4o",  # Using full GPT-4o for better reasoning
             temperature=0.3,
             max_tokens=3000,
-            messages=[
-                {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT},
-                {
-                    "role": "user", 
-                    "content": f"{prompt}\n\nBefore writing code:\n1. Describe what this object looks like from one end to the other\n2. Identify which end is thick vs thin\n3. Then write code building it section by section"
-                }
-            ],
+            messages=messages,
         )
         
         raw = response.choices[0].message.content

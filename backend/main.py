@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import os
 from routes.cad_routes import router as cad_router
+from routes.session_routes import router as session_router
+from routes.project_routes import router as project_router
 from database.db import connect_to_mongo
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,6 +22,8 @@ app.mount("/stls", StaticFiles(directory="stls"), name="stls")
 
 
 app.include_router(cad_router)
+app.include_router(session_router)
+app.include_router(project_router)
 
 # Startup: connect to DB
 @app.on_event("startup")

@@ -3,9 +3,11 @@ import { Center,Resize } from "@react-three/drei"; // Removed OrbitControls and 
 import { STLLoader } from "three/examples/jsm/Addons.js";
 import { deleteModel, updateModel } from "../lib/api";
 import toast from "react-hot-toast";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import ErrorBoundary from "./ErrorBoundary";
 import { Link } from "react-router-dom";
+import { useAuth } from "@clerk/clerk-react";
+import axios from "axios";
 
 function STLViewer({ url }: { url: string }) {
   const geometry = useLoader(STLLoader, url);
@@ -27,15 +29,78 @@ export default function ModelCard({
   model: any;
   onUpdate: () => void;
 }) {
+  const { getToken } = useAuth();
   const stlUrl = `${import.meta.env.VITE_BACKEND_URL}/cad/${model.id}/download_stl`;
   const [isEditing, setIsEditing] = useState(false);
   const [editedPrompt, setEditedPrompt] = useState(model.prompt);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [stlBlobUrl, setStlBlobUrl] = useState<string | null>(null);
+
+  // Fetch STL with authentication and create blob URL for viewer
+  useEffect(() => {
+    const fetchSTL = async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+
+        const response = await axios.get(stlUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+          responseType: 'blob',
+        });
+
+        const blob = new Blob([response.data], { type: 'application/sla' });
+        const url = URL.createObjectURL(blob);
+        setStlBlobUrl(url);
+
+        // Cleanup blob URL on unmount
+        return () => {
+          if (url) URL.revokeObjectURL(url);
+        };
+      } catch (error) {
+        console.error('Failed to load STL:', error);
+      }
+    };
+
+    fetchSTL();
+  }, [model.id, getToken, stlUrl]);
+
+  const handleDownload = async () => {
+    try {
+      const token = await getToken();
+      if (!token) {
+        toast.error("You must be logged in to download models.");
+        return;
+      }
+
+      const response = await axios.get(stlUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob',
+      });
+
+      const blob = new Blob([response.data], { type: 'application/sla' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `model_${model.id.slice(0, 8)}.stl`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("Download started");
+    } catch (error) {
+      toast.error("Download failed");
+    }
+  };
 
   const handleDelete = async () => {
     if (!confirm("Delete this model?")) return;
     try {
-      await deleteModel(model.id);
+      const token = await getToken();
+      if (!token) {
+        toast.error("You must be logged in to delete models.");
+        return;
+      }
+      await deleteModel(model.id, token);
       toast.success("Deleted");
       onUpdate();
     } catch {
@@ -50,7 +115,12 @@ export default function ModelCard({
     }
     setIsUpdating(true);
     try {
-      await updateModel(model.id, editedPrompt);
+      const token = await getToken();
+      if (!token) {
+        toast.error("You must be logged in to update models.");
+        return;
+      }
+      await updateModel(model.id, editedPrompt, token);
       toast.success("Model updated!");
       setIsEditing(false);
       onUpdate();
@@ -66,12 +136,15 @@ export default function ModelCard({
       <div className="h-64 bg-gray-100 relative group">
         <ErrorBoundary fallback={<div className="flex items-center justify-center h-full text-red-500">Failed to load model</div>}>
           <React.Suspense fallback={<div className="flex items-center justify-center h-full">Loading 3D model...</div>}>
-            {/* Added camera prop to Canvas for static positioning without OrbitControls */}
-            <Canvas camera={{ position: [4, 4, 4], fov: 45 }}>
-              <ambientLight intensity={0.8} />
-              <directionalLight position={[10, 10, 5]} intensity={1} />
-              <STLViewer url={stlUrl} />
-            </Canvas>
+            {stlBlobUrl ? (
+              <Canvas camera={{ position: [4, 4, 4], fov: 45 }}>
+                <ambientLight intensity={0.8} />
+                <directionalLight position={[10, 10, 5]} intensity={1} />
+                <STLViewer url={stlBlobUrl} />
+              </Canvas>
+            ) : (
+              <div className="flex items-center justify-center h-full">Loading 3D model...</div>
+            )}
           </React.Suspense>
         </ErrorBoundary>
         
@@ -100,13 +173,12 @@ export default function ModelCard({
         <p className="font-medium text-gray-800 line-clamp-2 h-12">{model.prompt}</p>
 
         <div className="mt-4 flex gap-3">
-          <a
-            href={stlUrl}
-            download
+          <button
+            onClick={handleDownload}
             className="flex-1 text-center py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
           >
             Download STL
-          </a>
+          </button>
           <Link
             to={`/models/${model.id}`}
             className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
